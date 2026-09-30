@@ -70,9 +70,6 @@ class Api:
 	def me(self):
 		return self._call("glx_timetrack.api.agent.me")
 
-	def tasks(self, search: str | None = None):
-		return self._call("glx_timetrack.api.agent.tasks", {"search": search} if search else {})
-
 	def heartbeat(self, state: dict):
 		return self._call("glx_timetrack.api.agent.heartbeat", {"state": json.dumps(state)})
 

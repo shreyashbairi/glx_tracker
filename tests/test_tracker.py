@@ -53,7 +53,7 @@ def blocks(box):
 
 def test_plain_work_blocks_and_stop():
 	clock, plat, box, tr = make([(10_000, ACTIVE)])
-	tr.start({"name": "TASK-1", "subject": "Amazon"})
+	tr.start()
 	run(clock, tr, 1500, plat)
 	tr.stop()
 	evs = events(box)
@@ -70,7 +70,7 @@ def test_plain_work_blocks_and_stop():
 
 def test_blocks_are_sent_while_running():
 	clock, plat, box, tr = make([(10_000, EXCEL)])
-	tr.start(None)
+	tr.start()
 	run(clock, tr, 1800)
 	# samples younger than idle timeout + 10 s are held back; older complete blocks are queued
 	bl = blocks(box)
@@ -82,7 +82,7 @@ def test_idle_keep():
 	clock, plat, box, tr = make([(600, ACTIVE), (480, IDLE), (10_000, ACTIVE)])
 	seen = []
 	tr.on_idle_return = lambda idle: seen.append(idle.start)
-	tr.start(None)
+	tr.start()
 	run(clock, tr, 1500, on_idle=lambda t: t.resolve_idle("keep"))
 	tr.stop()
 	bl = blocks(box)
@@ -94,7 +94,7 @@ def test_idle_keep():
 
 def test_idle_discard():
 	clock, plat, box, tr = make([(600, ACTIVE), (480, IDLE), (10_000, ACTIVE)])
-	tr.start(None)
+	tr.start()
 	run(clock, tr, 1500, on_idle=lambda t: t.resolve_idle("discard"))
 	tr.stop()
 	bl = blocks(box)
@@ -106,7 +106,7 @@ def test_idle_discard():
 
 def test_idle_discard_and_stop():
 	clock, plat, box, tr = make([(600, ACTIVE), (480, IDLE), (10_000, ACTIVE)])
-	tr.start(None)
+	tr.start()
 	run(clock, tr, 1100, on_idle=lambda t: t.resolve_idle("stop"))
 	assert tr.state == "stopped"
 	stop = [e for e in events(box) if e["type"] == "stop"][0]
@@ -119,7 +119,7 @@ def test_idle_autostop():
 	clock, plat, box, tr = make([(600, ACTIVE), (100_000, IDLE)])
 	notes = []
 	tr.on_notice = notes.append
-	tr.start(None)
+	tr.start()
 	run(clock, tr, 600 + 31 * 60)
 	assert tr.state == "stopped"
 	stop = [e for e in events(box) if e["type"] == "stop"][0]
@@ -130,7 +130,7 @@ def test_idle_autostop():
 
 def test_sleep_gap_stops_timer():
 	clock, plat, box, tr = make([(100_000, ACTIVE)])
-	tr.start(None)
+	tr.start()
 	run(clock, tr, 300)
 	clock.t += 2 * 3600  # laptop lid closed for two hours
 	tr.tick()
@@ -144,7 +144,7 @@ def test_short_sleep_gap_becomes_idle_question():
 	clock, plat, box, tr = make([(100_000, ACTIVE)])
 	asked = []
 	tr.on_idle_return = lambda idle: asked.append(idle.reason)
-	tr.start(None)
+	tr.start()
 	run(clock, tr, 300)
 	clock.t += 600  # 10 minutes asleep
 	tr.tick()
@@ -157,11 +157,11 @@ def test_short_sleep_gap_becomes_idle_question():
 	assert sum(b["idle_discarded"] for b in bl) == 599
 
 
-def test_switch_pause_resume():
+def test_start_pause_resume():
 	clock, plat, box, tr = make([(100_000, EXCEL)])
-	tr.start({"name": "A", "subject": "A"})
+	tr.start()
 	run(clock, tr, 100)
-	tr.start({"name": "B", "subject": "B"})
+	tr.start()  # already running: no-op
 	run(clock, tr, 100)
 	tr.pause()
 	run(clock, tr, 50)
@@ -169,23 +169,22 @@ def test_switch_pause_resume():
 	tr.resume()
 	run(clock, tr, 100)
 	tr.stop()
-	kinds = [(e["type"], e.get("session_type"), e.get("task"), e.get("reason")) for e in events(box) if e["type"] != "block"]
+	kinds = [(e["type"], e.get("session_type"), e.get("reason")) for e in events(box) if e["type"] != "block"]
 	assert kinds == [
-		("start", "Work", "A", None),
-		("stop", None, None, "Switch"),
-		("start", "Work", "B", None),
-		("stop", None, None, "User"),
-		("start", "Break", None, None),
-		("stop", None, None, "User"),
-		("start", "Work", "B", None),
-		("stop", None, None, "User"),
+		("start", "Work", None),
+		("stop", None, "User"),
+		("start", "Break", None),
+		("stop", None, "User"),
+		("start", "Work", None),
+		("stop", None, "User"),
 	]
+	assert not any("task" in e for e in events(box))
 	assert sum(b["tracked"] for b in blocks(box)) == 300
 
 
 def test_abort_on_server_refusal():
 	clock, plat, box, tr = make([(100_000, EXCEL)])
-	tr.start(None)
+	tr.start()
 	cid = tr.session["client_id"]
 	run(clock, tr, 50)
 	tr.abort(cid, "Time tracking is switched off")

@@ -53,7 +53,6 @@ class Config:
 		self.data.setdefault("server", DEFAULT_SERVER)
 		self.data.setdefault("device_id", "")
 		self.data.setdefault("autostart", True)
-		self.data.setdefault("recent_tasks", [])
 
 	def get(self, key, default=None):
 		return self.data.get(key, default)
@@ -118,13 +117,6 @@ class Config:
 	@property
 	def signed_in(self) -> bool:
 		return bool(self.get("device_id") and self.get_token())
-
-	def remember_task(self, task: dict | None):
-		if not task or not task.get("name"):
-			return
-		recent = [t for t in self.data.get("recent_tasks", []) if t.get("name") != task["name"]]
-		recent.insert(0, {k: task.get(k) for k in ("name", "subject", "project_name")})
-		self.set("recent_tasks", recent[:10])
 
 
 def new_client_id() -> str:

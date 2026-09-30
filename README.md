@@ -3,7 +3,8 @@
 Desktop time tracker for Globalex's ERPNext (replaces the Hubstaff app). It runs in the menu bar (Mac) or the system tray (Windows) and sends time and activity to the `glx_timetrack` app on https://erp.globalex.me.
 
 ## What it records
-- Timer start / pause / stop and the ERPNext Task you work on.
+One general work timer per person (not tied to Tasks or Projects).
+- Timer start / pause (break) / stop.
 - Per second: whether the keyboard and/or mouse was used (counts only, never which keys).
 - The app in front (name only) and, for browsers, the website domain (e.g. `sellercentral.amazon.ae`, never the full address or page content).
 - No screenshots, no window titles.
@@ -17,7 +18,7 @@ After 5 minutes without keyboard or mouse input (set in ERPNext → Timetrack Se
 
 ### Mac
 1. Download `GLX-Tracker-macOS-arm64.zip` (Apple Silicon, M1/M2/M3/M4) or `-intel.zip`, double-click it, and drag **GLX Tracker** into **Applications**.
-2. The app is not signed by Apple, so the first time: **right-click GLX Tracker → Open → Open**.
+2. The app is not signed by Apple. Open it once; when macOS blocks it, go to **System Settings → Privacy & Security**, scroll down and click **Open Anyway**. (If macOS says the app is "damaged", run `xattr -dr com.apple.quarantine "/Applications/GLX Tracker.app"` in Terminal and open it again.)
 3. Sign in with your ERPNext email and password.
 4. When macOS asks, allow **Input Monitoring** (System Settings → Privacy & Security → Input Monitoring → GLX Tracker on). Without it, keyboard activity shows as 0.
 5. The first time you use Chrome/Safari/Edge with the timer on, macOS asks whether GLX Tracker may control the browser. Click **OK** (this is how it reads the domain).
@@ -31,8 +32,8 @@ After an update, macOS may ask for these permissions again.
 3. Sign in with your ERPNext email and password. The clock icon sits in the tray (click ^ if hidden). It starts automatically at login.
 
 ## Using it
-- Open the window from the tray/menu-bar icon, pick a task, press **Start**. **Pause** starts a break; **Stop** ends the timer.
-- You can also start/stop from ERPNext: Task → **Timer ▸ Start timer**, or the **Time Tracker** page. The app reacts within ~15 seconds.
+- Press **Start** in the window or the tray/menu-bar menu when you start work. **Pause** starts a break (not counted as work); **Resume** continues; **Stop** ends the day.
+- You can also start / pause / stop from ERPNext on the **Time Tracker** page. The app reacts within ~15 seconds.
 - Closing the window keeps tracking; use **Quit** in the icon menu to exit (this stops the timer).
 
 ## Development

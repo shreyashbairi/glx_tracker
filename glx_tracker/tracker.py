@@ -91,7 +91,7 @@ class Tracker:
 		self.track_urls = True
 
 		self.state = "stopped"  # stopped | running | paused
-		self.session = None  # {"client_id", "task", "subject", "started"}
+		self.session = None  # {"client_id", "started"}
 		self.break_session = None
 		self.samples: deque[Sample] = deque()
 		self.blocks: dict[int, Block] = {}
@@ -124,27 +124,20 @@ class Tracker:
 			self.track_urls = bool(s.get("track_urls", 1))
 
 	# ------------------------------------------------------------------ timer control
-	def start(self, task: dict | None = None, ts: float | None = None):
+	def start(self, ts: float | None = None):
+		"""Start the (general) work timer. Does nothing if it is already running."""
 		with self.lock:
 			now = int(ts or self.clock())
 			if self.state == "running":
-				self._stop_work(now, "Switch")
-			elif self.state == "paused":
+				return
+			if self.state == "paused":
 				self._end_break(now)
-			self.session = {
-				"client_id": new_client_id(),
-				"task": (task or {}).get("name"),
-				"subject": (task or {}).get("subject") or "No task",
-				"project_name": (task or {}).get("project_name"),
-				"started": now,
-			}
-			self.outbox.put({"type": "start", "client_id": self.session["client_id"], "ts": now, "task": self.session["task"], "session_type": "Work"})
+			self.session = {"client_id": new_client_id(), "started": now}
+			self.outbox.put({"type": "start", "client_id": self.session["client_id"], "ts": now, "session_type": "Work"})
 			self.state = "running"
 			self.last_tick = now
 			self._prev_app = self._prev_url = None
 			self._persist()
-		if self.config:
-			self.config.remember_task(task)
 		self.on_change()
 
 	def stop(self, reason: str = "User", ts: float | None = None):
@@ -164,9 +157,8 @@ class Tracker:
 			if self.state != "running":
 				return
 			now = int(self.clock())
-			task = {"name": self.session["task"], "subject": self.session["subject"], "project_name": self.session.get("project_name")}
 			self._stop_work(now, "User")
-			self.break_session = {"client_id": new_client_id(), "started": now, "resume_task": task}
+			self.break_session = {"client_id": new_client_id(), "started": now}
 			self.outbox.put({"type": "start", "client_id": self.break_session["client_id"], "ts": now, "session_type": "Break"})
 			self.state = "paused"
 			self.session = None
@@ -177,8 +169,7 @@ class Tracker:
 		with self.lock:
 			if self.state != "paused":
 				return
-			task = (self.break_session or {}).get("resume_task")
-		self.start(task if task and task.get("name") else None)
+		self.start()
 
 	def _end_break(self, now: int):
 		if self.break_session:
@@ -405,8 +396,6 @@ class Tracker:
 				"state": self.state,
 				"tracking": self.state == "running",
 				"client_id": self.session["client_id"] if self.session else None,
-				"task": self.session["task"] if self.session else None,
-				"subject": self.session["subject"] if self.session else None,
 				"since": self.session["started"] if self.session else None,
 				"idle": bool(self.idle),
 			}

@@ -15,8 +15,6 @@ from PySide6.QtWidgets import (
 	QHBoxLayout,
 	QLabel,
 	QLineEdit,
-	QListWidget,
-	QListWidgetItem,
 	QMenu,
 	QMessageBox,
 	QPushButton,
@@ -70,7 +68,6 @@ class Bridge(QObject):
 	changed = Signal()
 	notice = Signal(str)
 	idle = Signal(object)
-	tasks_loaded = Signal(list)
 	signed_out = Signal()
 
 
@@ -201,43 +198,28 @@ class MainWindow(QWidget):
 		super().__init__()
 		self.app = app
 		self.setWindowTitle(APP_NAME)
-		self.setMinimumSize(380, 560)
+		self.setMinimumWidth(340)
 		big = QFont()
-		big.setPointSize(big.pointSize() + 14)
+		big.setPointSize(big.pointSize() + 16)
 		big.setBold(True)
 
 		self.state_lbl = QLabel()
-		self.task_lbl = QLabel()
-		self.task_lbl.setWordWrap(True)
 		self.clock_lbl = QLabel("0:00:00")
 		self.clock_lbl.setFont(big)
+		self.clock_lbl.setAlignment(Qt.AlignCenter)
 		self.today_lbl = QLabel()
+		self.today_lbl.setAlignment(Qt.AlignCenter)
 		self.today_lbl.setStyleSheet("color: gray")
 
 		self.start_btn = QPushButton("Start")
-		self.start_btn.setMinimumHeight(34)
+		self.start_btn.setMinimumHeight(38)
 		self.pause_btn = QPushButton("Pause")
-		self.pause_btn.setMinimumHeight(34)
+		self.pause_btn.setMinimumHeight(38)
 		self.start_btn.clicked.connect(self.on_start_stop)
 		self.pause_btn.clicked.connect(self.on_pause)
 		btns = QHBoxLayout()
 		btns.addWidget(self.start_btn, 2)
 		btns.addWidget(self.pause_btn, 1)
-
-		self.search = QLineEdit()
-		self.search.setPlaceholderText("Search tasks…")
-		self.search.textChanged.connect(self.fill_tasks)
-		reload_btn = QPushButton("↻")
-		reload_btn.setFixedWidth(34)
-		reload_btn.setToolTip("Reload tasks from ERPNext")
-		reload_btn.clicked.connect(self.app.load_tasks)
-		srow = QHBoxLayout()
-		srow.addWidget(self.search)
-		srow.addWidget(reload_btn)
-		self.list = QListWidget()
-		self.list.itemDoubleClicked.connect(lambda _i: self.start_selected())
-		self.switch_btn = QPushButton("Start on selected task")
-		self.switch_btn.clicked.connect(self.start_selected)
 
 		self.sync_lbl = QLabel()
 		self.sync_lbl.setStyleSheet("color: gray; font-size: 11px")
@@ -249,58 +231,18 @@ class MainWindow(QWidget):
 		lay = QVBoxLayout(self)
 		lay.addWidget(self.state_lbl)
 		lay.addWidget(self.clock_lbl)
-		lay.addWidget(self.task_lbl)
 		lay.addWidget(self.today_lbl)
+		lay.addSpacing(6)
 		lay.addLayout(btns)
-		lay.addSpacing(8)
-		lay.addLayout(srow)
-		lay.addWidget(self.list, 1)
-		lay.addWidget(self.switch_btn)
+		lay.addSpacing(6)
 		lay.addWidget(self.sync_lbl)
 		lay.addWidget(link)
-		self.tasks = []
-
-	# ------------------------------------------------------------------
-	def set_tasks(self, tasks):
-		self.tasks = tasks
-		self.fill_tasks()
-
-	def fill_tasks(self):
-		q = self.search.text().strip().lower()
-		current = self.app.tracker.status().get("task")
-		self.list.clear()
-		none = QListWidgetItem("— No task —")
-		none.setData(Qt.UserRole, None)
-		if not q:
-			self.list.addItem(none)
-		for t in self.tasks:
-			text = f"{t.get('subject')}"
-			if t.get("project_name"):
-				text += f"   ·  {t['project_name']}"
-			if q and q not in text.lower() and q not in t["name"].lower():
-				continue
-			item = QListWidgetItem(("▶ " if t["name"] == current else "") + text)
-			item.setData(Qt.UserRole, t)
-			item.setToolTip(t["name"] + (f"  due {t['due']}" if t.get("due") else ""))
-			self.list.addItem(item)
-
-	def selected_task(self):
-		item = self.list.currentItem()
-		return item.data(Qt.UserRole) if item else None
-
-	def start_selected(self):
-		if self.list.currentItem() is None:
-			return
-		self.app.start(self.selected_task())
 
 	def on_start_stop(self):
-		st = self.app.tracker.state
-		if st == "running":
-			self.app.tracker.stop("User")
-		elif st == "paused":
+		if self.app.tracker.state in ("running", "paused"):
 			self.app.tracker.stop("User")
 		else:
-			self.app.start(self.selected_task() if self.list.currentItem() else self.app.last_task())
+			self.app.start()
 
 	def on_pause(self):
 		if self.app.tracker.state == "running":
@@ -316,16 +258,14 @@ class MainWindow(QWidget):
 			self.state_lbl.setText("● Idle — waiting for your answer")
 			color = COLORS["idle"]
 		else:
-			self.state_lbl.setText({"running": "● Tracking", "paused": "● On a break", "stopped": "● Timer stopped"}[state])
+			self.state_lbl.setText({"running": "● Working", "paused": "● On a break", "stopped": "● Timer stopped"}[state])
 			color = COLORS[state]
 		self.state_lbl.setStyleSheet(f"color: {color}; font-weight: bold")
 		self.clock_lbl.setText(hms(tr.session_seconds()) if state == "running" else "0:00:00")
-		self.task_lbl.setText(st["subject"] or ("Break" if state == "paused" else "Pick a task below and press Start"))
-		self.today_lbl.setText(f"Today: {hm(tr.today_seconds())}")
+		self.today_lbl.setText(f"Worked today: {hm(tr.today_seconds())}")
 		self.start_btn.setText("Stop" if state in ("running", "paused") else "Start")
 		self.pause_btn.setText("Resume" if state == "paused" else "Pause")
 		self.pause_btn.setEnabled(state in ("running", "paused"))
-		self.switch_btn.setText("Switch to selected task" if state == "running" else "Start on selected task")
 		s = self.app.syncer
 		queued = self.app.outbox.count()
 		if s and s.online:
@@ -383,7 +323,6 @@ class TrackerApp:
 		self.bridge.signed_out.connect(self.on_signed_out)
 
 		self.window = MainWindow(self)
-		self.bridge.tasks_loaded.connect(self.window.set_tasks)
 		self.make_tray()
 
 		self.tick_timer = QTimer()
@@ -420,7 +359,6 @@ class TrackerApp:
 		self.platform.start()
 		self.url_thread = threading.Thread(target=self.url_loop, daemon=True, name="glx-url")
 		self.url_thread.start()
-		self.load_tasks()
 
 	def on_signed_out(self):
 		was_running = self.tracker.state != "stopped"
@@ -480,13 +418,7 @@ class TrackerApp:
 		log.info("command from ERPNext: %s", cmd)
 		try:
 			if action == "start":
-				task = None
-				if cmd.get("task"):
-					task = next((t for t in self.window.tasks if t["name"] == cmd["task"]), None) or {
-						"name": cmd["task"],
-						"subject": cmd["task"],
-					}
-				self.start(task)
+				self.start()
 			elif action == "stop":
 				self.tracker.stop("Web")
 			elif action == "pause":
@@ -497,27 +429,9 @@ class TrackerApp:
 			self.syncer.command_done(cmd.get("id") or 0)
 
 	# ------------------------------------------------------------------ actions
-	def start(self, task):
-		if self.syncer and self.syncer.settings.get("require_task") and not (task and task.get("name")):
-			self.notify("Please pick a task first.")
-			self.window.show()
-			return
-		self.tracker.start(task)
+	def start(self):
+		self.tracker.start()
 		self.syncer and self.syncer.wake()
-
-	def last_task(self):
-		recent = self.config.get("recent_tasks") or []
-		return recent[0] if recent else None
-
-	def load_tasks(self):
-		def work():
-			try:
-				tasks = self.api.tasks() or []
-				self.bridge.tasks_loaded.emit(tasks)
-			except Exception as e:
-				log.warning("could not load tasks: %s", e)
-
-		threading.Thread(target=work, daemon=True).start()
 
 	def open_web(self):
 		webbrowser.open(f"{self.config.get('server')}/desk/time-tracker")
@@ -630,8 +544,8 @@ class TrackerApp:
 		self.tray.setIcon(self.icons[key])
 		today = hm(self.tracker.today_seconds())
 		if state == "running":
-			self.m_status.setText(f"Tracking: {st['subject']}")
-			self.tray.setToolTip(f"{APP_NAME} — {st['subject']} · today {today}")
+			self.m_status.setText("Working")
+			self.tray.setToolTip(f"{APP_NAME} — working · today {today}")
 		elif state == "paused":
 			self.m_status.setText("On a break")
 			self.tray.setToolTip(f"{APP_NAME} — on a break · today {today}")

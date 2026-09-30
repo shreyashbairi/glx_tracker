@@ -34,7 +34,6 @@ def main(argv=None):
 	p.add_argument("--server", required=True)
 	p.add_argument("--email", required=True)
 	p.add_argument("--password", required=True)
-	p.add_argument("--task", help="Task name (ID); default: first task in the list")
 	p.add_argument("--replay", type=int, default=0, help="simulate N minutes ending now")
 	p.add_argument("--idle-at", type=int, default=0, help="minute at which to go idle (replay)")
 	p.add_argument("--idle-for", type=int, default=0, help="idle minutes (replay)")
@@ -54,9 +53,6 @@ def main(argv=None):
 	api.device, api.token = info["device"], info["token"]
 	print("signed in as", info["full_name"], "device", info["device"])
 
-	tasks = api.tasks()
-	task = next((t for t in tasks if t["name"] == args.task), tasks[0] if tasks else None)
-	print("task:", task and task["subject"])
 
 	from glx_tracker.config import data_dir
 
@@ -76,7 +72,7 @@ def main(argv=None):
 		tr = Tracker(plat, outbox, cfg, clock=clock)
 		tr.apply_settings(info.get("settings"))
 		tr.on_notice = lambda m: print("notice:", m)
-		tr.start(task)
+		tr.start()
 		end = start + args.replay * 60
 		while clock.t < end:
 			clock.t += 1
