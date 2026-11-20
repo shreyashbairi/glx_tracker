@@ -14,6 +14,11 @@ Data is grouped into 10-minute blocks, as in Hubstaff. If the computer is offlin
 ## Idle time
 After 5 minutes without keyboard or mouse input (set in ERPNext → Timetrack Settings) the time counts as idle. When you come back you choose **Keep**, **Discard**, or **Discard and stop timer**. If you don't come back for 30 minutes, the timer stops at the moment you left. Time while the computer sleeps is never counted.
 
+Since v0.3.0 the question pops up as soon as the idle time starts, with the time at which the timer will stop by itself. In a call or a meeting, click **Keep idle time**: the timer keeps running and asks again after another idle period without input.
+
+## Timer off while you work (v0.3.0)
+Monday to Friday, 09:00–18:00 (your computer's time), when you are using the keyboard or mouse but the timer is stopped or on a break, a window pops up: **Start timer** (or **Resume timer**) or **Not now**. After *Not now* it asks again 5 minutes later if you are still working with the timer off. When the timer stopped by itself because you were away or the computer slept, the window says so and offers to start again.
+
 ## Install (employees)
 
 ### Mac

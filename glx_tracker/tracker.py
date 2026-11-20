@@ -9,6 +9,12 @@ to when input stopped) are held back. When the person returns they choose keep /
 discard-and-stop. If nobody returns within ``idle_autostop`` the timer stops at the moment the
 input stopped. Samples are only turned into blocks once they are older than the idle timeout,
 so a later idle decision can still change them.
+
+v0.3.0: the idle question is shown as soon as idle begins (not only on return), so the person
+sees that the timer is about to stop and can keep it running (a call, a meeting). And while the
+timer is stopped or on a break, someone who is clearly working (input in at least
+NUDGE_MIN_ACTIVE of the last NUDGE_WINDOW seconds) gets a popup asking to start / resume the
+timer, Monday to Friday 09:00-18:00 local time, again every NUDGE_REPEAT seconds after "Not now".
 """
 
 import logging
@@ -24,6 +30,20 @@ log = logging.getLogger("glx_tracker.tracker")
 
 BLOCK = 600
 SLEEP_GAP = 30  # a tick arriving this late means the computer slept / froze
+
+# "You are working but the timer is off" popup (Shrey, 20 Nov 2026)
+NUDGE_WINDOW = 60  # look at the last minute ...
+NUDGE_MIN_ACTIVE = 15  # ... and ask when there was input in at least this many of its seconds
+NUDGE_REPEAT = 5 * 60  # after "Not now": ask again 5 minutes later if still working with the timer off
+WORK_DAYS = (0, 1, 2, 3, 4)  # Monday to Friday
+WORK_FROM = 9 * 3600  # 09:00 local time
+WORK_TO = 18 * 3600  # 18:00 local time
+
+
+def in_work_hours(ts: float) -> bool:
+	t = time.localtime(ts)
+	secs = t.tm_hour * 3600 + t.tm_min * 60 + t.tm_sec
+	return t.tm_wday in WORK_DAYS and WORK_FROM <= secs < WORK_TO
 
 
 def slot_of(ts: int) -> int:
@@ -89,6 +109,8 @@ class Tracker:
 		self.idle_autostop = 30 * 60
 		self.track_apps = True
 		self.track_urls = True
+		self.tracking_enabled = True  # Timetrack Settings "enabled"
+		self.nudge_enabled = True
 
 		self.state = "stopped"  # stopped | running | paused
 		self.session = None  # {"client_id", "started"}
@@ -102,6 +124,11 @@ class Tracker:
 
 		self.fg = Foreground(None)
 		self._url = (None, None, 0.0)  # (app, domain, when)
+		self._quiet_base = None  # idle answered while still away: count quiet time again from here
+		self._active_secs: deque[int] = deque()  # seconds with input while the timer is off
+		self._last_off_check = None
+		self._nudge_after = 0  # no "timer is off" popup before this time
+		self.stopped_at = None  # when the last automatic stop (away / asleep) cut the timer
 
 		# display helpers
 		self.server_today = 0
@@ -111,7 +138,9 @@ class Tracker:
 		# callbacks (set by the UI)
 		self.on_change = lambda: None
 		self.on_idle_return = lambda idle: None
+		self.on_idle_begin = lambda idle: None  # idle just started: show the question at once
 		self.on_notice = lambda text: None
+		self.on_nudge = lambda kind: None  # kind: stopped | paused | autostop | sleep
 
 	# ------------------------------------------------------------------ settings
 	def apply_settings(self, s: dict | None):
@@ -122,6 +151,8 @@ class Tracker:
 			self.idle_autostop = max(self.idle_timeout + 60, int(s.get("idle_autostop_min") or 30) * 60)
 			self.track_apps = bool(s.get("track_apps", 1))
 			self.track_urls = bool(s.get("track_urls", 1))
+			self.tracking_enabled = bool(s.get("enabled", 1))
+			self.nudge_enabled = bool(s.get("nudge_enabled", 1))
 
 	# ------------------------------------------------------------------ timer control
 	def start(self, ts: float | None = None):
@@ -136,6 +167,10 @@ class Tracker:
 			self.outbox.put({"type": "start", "client_id": self.session["client_id"], "ts": now, "session_type": "Work"})
 			self.state = "running"
 			self.last_tick = now
+			self._quiet_base = None
+			self._active_secs.clear()
+			self._last_off_check = None
+			self._nudge_after = 0
 			self._prev_app = self._prev_url = None
 			self._persist()
 		self.on_change()
@@ -199,6 +234,7 @@ class Tracker:
 	def tick(self):
 		with self.lock:
 			if self.state != "running":
+				self._watch_off()
 				return
 			now = int(self.clock())
 			if self.last_tick is not None and now <= self.last_tick:
@@ -232,6 +268,10 @@ class Tracker:
 			self.last_tick = now
 
 			active = kb or mouse or idle_s < 1.5
+			if active:
+				self._quiet_base = None
+			elif self._quiet_base is not None:
+				idle_s = min(idle_s, now - self._quiet_base)
 			if self.idle is None:
 				if idle_s >= self.idle_timeout:
 					self._begin_idle(int(now - idle_s) + 1)
@@ -260,10 +300,12 @@ class Tracker:
 		"""The computer slept (or the app was frozen) between ``last`` and ``now``."""
 		if now - last >= self.idle_autostop:
 			self._stop_work(last, "Sleep")
+			self.stopped_at = last
 			self.state = "stopped"
 			self.session = None
 			self._persist()
 			self.on_notice(f"Timer stopped at {time.strftime('%H:%M', time.localtime(last))} because the computer was asleep.")
+			self._nudge_now("sleep", now)
 			self.on_change()
 			return
 		# shorter gap: treat it like idle time the person decides about
@@ -278,6 +320,8 @@ class Tracker:
 		self._mark_idle_until(int(self.clock()) + 1)
 		log.info("idle since %s", start)
 		self.on_change()
+		if self.idle.reason == "idle":
+			self.on_idle_begin(self.idle)
 
 	def _mark_idle_until(self, end: int):
 		for s in self.samples:
@@ -292,10 +336,12 @@ class Tracker:
 	def _auto_stop(self):
 		start = self.idle.start
 		self._stop_work(start, "Idle", drop_from=start)
+		self.stopped_at = start
 		self.state = "stopped"
 		self.session = None
 		self._persist()
 		self.on_notice(f"Timer stopped at {time.strftime('%H:%M', time.localtime(start))} because you were away.")
+		self._nudge_now("autostop", int(self.clock()))
 		self.on_change()
 
 	def resolve_idle(self, action: str):
@@ -309,6 +355,10 @@ class Tracker:
 				self.session = None
 				self._persist()
 			else:
+				if not self.idle.returned:
+					# answered while still away (a call, a meeting): the timer keeps running and the
+					# next idle question comes after another full idle timeout without input
+					self._quiet_base = int(self.clock())
 				self._resolve_idle_locked(action)
 		self.on_change()
 
@@ -317,6 +367,39 @@ class Tracker:
 			if s.kind == "idle":
 				s.kind = "kept" if action == "keep" else "discarded"
 		self.idle = None
+
+	# ------------------------------------------------------------------ timer off while working
+	def _watch_off(self):
+		"""Called every second while the timer is stopped or on a break."""
+		now = int(self.clock())
+		if self._last_off_check is not None and now <= self._last_off_check:
+			return
+		self._last_off_check = now
+		try:
+			kb, mouse = self.platform.input_state()
+			quiet = self.platform.idle_seconds()
+		except Exception:
+			return
+		if kb or mouse or quiet < 1.5:
+			self._active_secs.append(now)
+		while self._active_secs and self._active_secs[0] <= now - NUDGE_WINDOW:
+			self._active_secs.popleft()
+		if len(self._active_secs) < NUDGE_MIN_ACTIVE or now < self._nudge_after:
+			return
+		self._nudge_now(self.state, now)
+
+	def _nudge_now(self, kind: str, now: int):
+		if not (self.nudge_enabled and self.tracking_enabled) or not in_work_hours(now):
+			return
+		self._nudge_after = now + NUDGE_REPEAT
+		self.on_nudge(kind)
+
+	def snooze_nudge(self):
+		"""'Not now': ask again after NUDGE_REPEAT if the person is still working with the timer off."""
+		with self.lock:
+			now = int(self.clock())
+			self._nudge_after = now + NUDGE_REPEAT
+			self._active_secs.clear()
 
 	# ------------------------------------------------------------------ blocks
 	def _count_discarded(self, s: Sample):

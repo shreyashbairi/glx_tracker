@@ -62,12 +62,28 @@ def dot_icon(color: str, ring: bool = False) -> QIcon:
 	return QIcon(pm)
 
 
+def bring_to_front(w: QWidget):
+	"""Show a window above everything else, also when GLX Tracker is only a menu-bar app."""
+	w.show()
+	w.raise_()
+	w.activateWindow()
+	if sys.platform == "darwin":
+		try:
+			from AppKit import NSApplication
+
+			NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+		except Exception:
+			pass
+
+
 class Bridge(QObject):
 	"""Thread-safe hop from tracker/sync threads to the UI thread."""
 
 	changed = Signal()
 	notice = Signal(str)
 	idle = Signal(object)
+	idle_begin = Signal(object)
+	nudge = Signal(str)
 	signed_out = Signal()
 
 
@@ -166,28 +182,109 @@ class IdleDialog(QDialog):
 		self.idle = idle
 		self.refresh()
 		self.timer.start(5000)
-		self.show()
-		self.raise_()
-		self.activateWindow()
+		bring_to_front(self)
 
 	def refresh(self):
-		if self.tracker.idle is None:
+		idle = self.tracker.idle
+		if idle is None:
 			self.timer.stop()
 			self.hide()
 			return
-		start = self.tracker.idle.start
-		end = int(self.tracker.idle.returned or time.time())
+		start = idle.start
+		hhmm = lambda ts: time.strftime("%H:%M", time.localtime(ts))  # noqa: E731
+		if not idle.returned and idle.reason == "idle":
+			# v0.3.0: shown as soon as idle begins, before the timer stops by itself
+			mins = max(1, (int(time.time()) - start) // 60)
+			self.setWindowTitle(f"{APP_NAME} — are you still working?")
+			self.label.setText(
+				f"No keyboard or mouse input since {hhmm(start)} ({mins} min).\n"
+				f"Your timer stops by itself at {hhmm(start + self.tracker.idle_autostop)} unless you answer.\n"
+				"Still working away from the keyboard (a call, a meeting)? Click Keep idle time."
+			)
+			return
+		self.setWindowTitle(f"{APP_NAME} — you were away")
+		end = int(idle.returned or time.time())
 		mins = max(1, (end - start) // 60)
-		what = "Your computer was asleep" if self.tracker.idle.reason == "sleep" else "No keyboard or mouse input"
+		what = "Your computer was asleep" if idle.reason == "sleep" else "No keyboard or mouse input"
 		self.label.setText(
-			f"{what} from {time.strftime('%H:%M', time.localtime(start))} to "
-			f"{time.strftime('%H:%M', time.localtime(end))} ({mins} min).\nWhat should happen with this time?"
+			f"{what} from {hhmm(start)} to {hhmm(end)} ({mins} min).\nWhat should happen with this time?"
 		)
 
 	def answer(self, action):
 		self.timer.stop()
 		self.tracker.resolve_idle(action)
 		self.hide()
+
+
+class NudgeDialog(QDialog):
+	"""v0.3.0: "You are working but the timer is off" (stopped, on a break, or stopped while away)."""
+
+	def __init__(self, app: "TrackerApp"):
+		super().__init__()
+		self.app = app
+		self.setWindowTitle(f"{APP_NAME} — your timer is off")
+		self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+		self.setMinimumWidth(420)
+		self.label = QLabel()
+		self.label.setWordWrap(True)
+		f = QFont()
+		f.setPointSize(f.pointSize() + 1)
+		self.label.setFont(f)
+		self.go = QPushButton("Start timer")
+		self.go.setDefault(True)
+		self.go.setMinimumHeight(34)
+		later = QPushButton("Not now")
+		later.setMinimumHeight(34)
+		self.go.clicked.connect(self.on_go)
+		later.clicked.connect(self.on_later)
+		row = QHBoxLayout()
+		row.addWidget(self.go, 2)
+		row.addWidget(later, 1)
+		self.hint = QLabel("If you keep working with the timer off, you will be asked again in 5 minutes.")
+		self.hint.setWordWrap(True)
+		self.hint.setStyleSheet("color: gray")
+		lay = QVBoxLayout(self)
+		lay.addWidget(self.label)
+		lay.addWidget(self.hint)
+		lay.addLayout(row)
+		self.kind = "stopped"
+
+	def show_for(self, kind: str):
+		tr = self.app.tracker
+		if tr.state == "running":
+			return
+		self.kind = "paused" if tr.state == "paused" else kind
+		at = time.strftime("%H:%M", time.localtime(tr.stopped_at)) if tr.stopped_at else None
+		if self.kind == "paused":
+			text = "You are working, but your GLX Tracker timer is on a break.\nResume the timer to record your work time."
+			self.go.setText("Resume timer")
+		elif kind == "autostop" and at:
+			text = f"Your timer stopped at {at} because there was no keyboard or mouse input.\nStart it again when you are back at work."
+			self.go.setText("Start timer")
+		elif kind == "sleep" and at:
+			text = f"Your timer stopped at {at} because the computer was asleep.\nStart it again when you are back at work."
+			self.go.setText("Start timer")
+		else:
+			text = "You are working, but your GLX Tracker timer is not running.\nStart the timer to record your work time."
+			self.go.setText("Start timer")
+		self.label.setText(text)
+		bring_to_front(self)
+
+	def on_go(self):
+		self.hide()
+		if self.app.tracker.state == "paused":
+			self.app.tracker.resume()
+			self.app.syncer and self.app.syncer.wake()
+		else:
+			self.app.start()
+
+	def on_later(self):
+		self.app.tracker.snooze_nudge()
+		self.hide()
+
+	def closeEvent(self, ev):
+		self.app.tracker.snooze_nudge()
+		super().closeEvent(ev)
 
 
 # ---------------------------------------------------------------------------- main window
@@ -317,9 +414,14 @@ class TrackerApp:
 		self.tracker.on_change = self.bridge.changed.emit
 		self.tracker.on_notice = self.bridge.notice.emit
 		self.tracker.on_idle_return = self.bridge.idle.emit
+		self.tracker.on_idle_begin = self.bridge.idle_begin.emit
+		self.tracker.on_nudge = self.bridge.nudge.emit
+		self.nudge_dialog = NudgeDialog(self)
 		self.bridge.changed.connect(self.refresh)
 		self.bridge.notice.connect(self.notify)
 		self.bridge.idle.connect(self.idle_dialog.show_for)
+		self.bridge.idle_begin.connect(self.idle_dialog.show_for)
+		self.bridge.nudge.connect(self.nudge_dialog.show_for)
 		self.bridge.signed_out.connect(self.on_signed_out)
 
 		self.window = MainWindow(self)
@@ -556,6 +658,8 @@ class TrackerApp:
 		self.m_start.setText("Stop timer" if state in ("running", "paused") else "Start timer")
 		self.m_pause.setText("Resume" if state == "paused" else "Pause")
 		self.m_pause.setEnabled(state in ("running", "paused"))
+		if state == "running" and self.nudge_dialog.isVisible():
+			self.nudge_dialog.hide()  # started from the window, the menu or ERPNext
 		if self.window.isVisible():
 			self.window.refresh()
 

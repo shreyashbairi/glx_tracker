@@ -191,6 +191,130 @@ def test_abort_on_server_refusal():
 	assert tr.state == "stopped" and not tr.samples
 
 
+
+# ---------------------------------------------------------------- v0.3.0: idle question at once, "timer is off" popup
+import time as _time
+
+MON_10 = int(_time.mktime((2026, 11, 23, 10, 0, 0, 0, 0, -1)))  # a Monday, 10:00 local time
+MON_17_59 = int(_time.mktime((2026, 11, 23, 17, 59, 0, 0, 0, -1)))
+MON_20 = int(_time.mktime((2026, 11, 23, 20, 0, 0, 0, 0, -1)))
+SAT_10 = int(_time.mktime((2026, 11, 28, 10, 0, 0, 0, 0, -1)))
+
+
+def make_at(script, t, settings=None):
+	clock = Clock(t)
+	plat = SimPlatform(clock=clock, script=script)
+	box = Outbox(os.path.join(tempfile.mkdtemp(), "o.db"))
+	tr = Tracker(plat, box, clock=clock)
+	tr.apply_settings(dict({"idle_timeout_min": 10, "idle_autostop_min": 15, "track_apps": 1, "track_urls": 1}, **(settings or {})))
+	return clock, plat, box, tr
+
+
+def test_idle_question_shown_when_idle_begins():
+	clock, plat, box, tr = make([(600, ACTIVE), (100_000, IDLE)])
+	begun = []
+	tr.on_idle_begin = lambda idle: begun.append((int(clock()), idle.start))
+	tr.start()
+	run(clock, tr, 600 + 5 * 60 + 5)
+	assert len(begun) == 1, begun
+	shown_at, start = begun[0]
+	assert abs(start - (T0 + 30 + 600)) <= 2  # idle counted from the last input
+	assert abs(shown_at - (start + 5 * 60)) <= 2  # shown at the idle timeout, while still away
+	assert tr.state == "running"
+
+
+def test_keep_while_away_keeps_timer_running():
+	# 10 min idle timeout, 15 min auto-stop (production settings). Person in a meeting answers Keep.
+	clock, plat, box, tr = make_at([(600, ACTIVE), (100_000, IDLE)], MON_10)
+	begun = []
+
+	def on_begin(idle):
+		begun.append(int(clock()))
+		if len(begun) == 1:
+			tr.resolve_idle("keep")  # "Keep idle time" clicked while away
+
+	tr.on_idle_begin = on_begin
+	tr.start()
+	run(clock, tr, 600 + 10 * 60 + 5)
+	assert len(begun) == 1 and tr.state == "running" and tr.idle is None
+	run(clock, tr, 9 * 60)  # 19 min without input: without the answer it would have stopped at 15
+	assert tr.state == "running" and len(begun) == 1
+	run(clock, tr, 2 * 60)  # 10 min after the answer: asked again
+	assert len(begun) == 2 and abs(begun[1] - begun[0] - 600) <= 3
+	run(clock, tr, 6 * 60)  # second question not answered: stops 15 min after the answer
+	assert tr.state == "stopped"
+	stop = [e for e in events(box) if e["type"] == "stop"][0]
+	assert stop["reason"] == "Idle" and abs(stop["ts"] - begun[0]) <= 2
+	bl = blocks(box)
+	assert sum(b["idle_kept"] for b in bl) >= 600 - 3  # the kept first 10 minutes count
+
+
+def test_nudge_when_working_with_timer_off():
+	clock, plat, box, tr = make_at([(100_000, EXCEL)], MON_10)
+	kinds = []
+	tr.on_nudge = lambda kind: kinds.append((kind, int(clock())))
+	run(clock, tr, 14)
+	assert not kinds  # a few seconds of mouse movement is not "working" yet
+	run(clock, tr, 2)
+	assert len(kinds) == 1 and kinds[0][0] == "stopped" and kinds[0][1] - MON_10 in range(14, 17)
+	tr.snooze_nudge()  # "Not now"
+	run(clock, tr, 299)
+	assert len(kinds) == 1
+	run(clock, tr, 2)
+	assert len(kinds) == 2  # asked again 5 minutes later, still working
+	tr.start()
+	run(clock, tr, 600)
+	assert len(kinds) == 2  # timer running: no popup
+
+
+def test_nudge_when_on_a_break():
+	clock, plat, box, tr = make_at([(100_000, EXCEL)], MON_10)
+	kinds = []
+	tr.on_nudge = kinds.append
+	tr.start()
+	run(clock, tr, 60)
+	tr.pause()
+	run(clock, tr, 20)
+	assert kinds == ["paused"]
+	tr.resume()
+	assert tr.state == "running"
+
+
+def test_no_nudge_when_away_or_outside_hours():
+	for t in (MON_20, SAT_10):
+		clock, plat, box, tr = make_at([(100_000, EXCEL)], t)
+		kinds = []
+		tr.on_nudge = kinds.append
+		run(clock, tr, 900)
+		assert not kinds, (t, kinds)
+	clock, plat, box, tr = make_at([(100_000, IDLE)], MON_10)
+	kinds = []
+	tr.on_nudge = kinds.append
+	run(clock, tr, 900)
+	assert not kinds  # computer not in use
+	clock, plat, box, tr = make_at([(100_000, EXCEL)], MON_17_59)
+	kinds = []
+	tr.on_nudge = kinds.append
+	run(clock, tr, 300)
+	assert len(kinds) == 1  # 17:59:16 yes, nothing after 18:00
+	clock, plat, box, tr = make_at([(100_000, EXCEL)], MON_10, {"nudge_enabled": 0})
+	kinds = []
+	tr.on_nudge = kinds.append
+	run(clock, tr, 300)
+	assert not kinds
+
+
+def test_autostop_shows_timer_off_popup():
+	clock, plat, box, tr = make_at([(600, ACTIVE), (100_000, IDLE)], MON_10)
+	kinds = []
+	tr.on_nudge = kinds.append
+	tr.start()
+	run(clock, tr, 600 + 15 * 60 + 5)
+	assert tr.state == "stopped" and kinds == ["autostop"]
+	run(clock, tr, 600)
+	assert kinds == ["autostop"]  # still away: nothing more
+
+
 if __name__ == "__main__":
 	import inspect
 
