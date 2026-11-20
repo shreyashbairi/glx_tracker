@@ -11,7 +11,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14          # Apple Silicon
+          - os: macos-15          # Apple Silicon (macos-14 runners were retired)
             artifact: GLX-Tracker-macOS-arm64
           - os: macos-15-intel    # Intel Macs
             artifact: GLX-Tracker-macOS-intel
